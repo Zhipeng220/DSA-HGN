@@ -1,11 +1,9 @@
 import math
 import pdb
-
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-
 
 def import_class(name):
     components = name.split('.')
@@ -13,7 +11,6 @@ def import_class(name):
     for comp in components[1:]:
         mod = getattr(mod, comp)
     return mod
-
 
 def conv_branch_init(conv, branches):
     weight = conv.weight
@@ -23,18 +20,15 @@ def conv_branch_init(conv, branches):
     nn.init.normal_(weight, 0, math.sqrt(2. / (n * k1 * k2 * branches)))
     nn.init.constant_(conv.bias, 0)
 
-
 def conv_init(conv):
     if conv.weight is not None:
         nn.init.kaiming_normal_(conv.weight, mode='fan_out')
     if conv.bias is not None:
         nn.init.constant_(conv.bias, 0)
 
-
 def bn_init(bn, scale):
     nn.init.constant_(bn.weight, scale)
     nn.init.constant_(bn.bias, 0)
-
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -49,6 +43,9 @@ def weights_init(m):
         if hasattr(m, 'bias') and m.bias is not None:
             m.bias.data.fill_(0)
 
+# =============================================================================
+# Basic Modules (TCN, GCN, Hypergraph)
+# =============================================================================
 
 class TemporalConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1):
@@ -68,7 +65,6 @@ class TemporalConv(nn.Module):
         x = self.conv(x)
         x = self.bn(x)
         return x
-
 
 class MultiScale_TemporalConv(nn.Module):
     def __init__(self,
@@ -147,7 +143,6 @@ class MultiScale_TemporalConv(nn.Module):
         out = out + res
         return out
 
-
 class CTRGC(nn.Module):
     def __init__(self, in_channels, out_channels, rel_reduction=8, mid_reduction=1):
         super(CTRGC, self).__init__()
@@ -177,7 +172,6 @@ class CTRGC(nn.Module):
         x1 = torch.einsum('ncuv,nctv->nctu', x1, x3)
         return x1
 
-
 class unit_tcn(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=9, stride=1):
         super(unit_tcn, self).__init__()
@@ -193,7 +187,6 @@ class unit_tcn(nn.Module):
     def forward(self, x):
         x = self.bn(self.conv(x))
         return x
-
 
 class unit_gcn(nn.Module):
     def __init__(self, in_channels, out_channels, A, coff_embedding=4, adaptive=True, residual=True):
@@ -250,7 +243,6 @@ class unit_gcn(nn.Module):
 
         return y
 
-
 class DynamicHypergraphGenerator(nn.Module):
     def __init__(self, in_channels, num_hyperedges, ratio=8):
         super(DynamicHypergraphGenerator, self).__init__()
@@ -280,7 +272,6 @@ class DynamicHypergraphGenerator(nn.Module):
 
         H = torch.softmax(H, dim=-1)
         return H
-
 
 class unit_hypergcn(nn.Module):
     def __init__(self, in_channels, out_channels, num_hyperedges=16, residual=True):
@@ -328,7 +319,6 @@ class unit_hypergcn(nn.Module):
         y = self.relu(y)
         return y
 
-
 class TCN_GCN_unit(nn.Module):
     def __init__(self, in_channels, out_channels, A, stride=1, residual=True, adaptive=True, kernel_size=5,
                  dilations=[1, 2], num_hyperedges=16):
@@ -366,9 +356,11 @@ class TCN_GCN_unit(nn.Module):
         y = self.relu(self.tcn1(z_fused) + self.residual(x))
         return y
 
+# =============================================================================
+# Backbone Model (Single Stream, Single Branch)
+# =============================================================================
 
 class Model(nn.Module):
-    # [FIXED] Updated __init__ to accept extra args from SOTA config
     def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3,
                  drop_out=0, adaptive=True, num_hyperedges=16,
                  base_channels=64, num_stages=10, inflate_stages=[5, 8], down_stages=[5, 8],
@@ -387,10 +379,9 @@ class Model(nn.Module):
         self.num_point = num_point
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
 
-        # [FIXED] Use base_channels argument
         base_channel = base_channels
 
-        # Hardcoded structure matches the SOTA config default (10 stages, inflate at 5,8)
+        # Hardcoded structure (10 stages, inflate at 5,8)
         self.l1 = TCN_GCN_unit(in_channels, base_channel, A, residual=False, adaptive=adaptive,
                                num_hyperedges=num_hyperedges)
         self.l2 = TCN_GCN_unit(base_channel, base_channel, A, adaptive=adaptive, num_hyperedges=num_hyperedges)
@@ -414,7 +405,7 @@ class Model(nn.Module):
             self.drop_out = lambda x: x
 
     def forward(self, x, drop=False, return_features=False):
-        # 🔴 [CRITICAL FIX] 入口安检：防止数据加载器漏过来的脏数据进入网络 (MPS NaN 终极杀手)
+        # 🔴 [CRITICAL FIX] 入口安检
         x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
 
         if len(x.shape) == 3:
@@ -457,15 +448,182 @@ class Model(nn.Module):
     def get_hypergraph_l1_loss(self):
         l1_loss = 0.0
         count = 0
-        # 遍历所有层，找到 DynamicHypergraphGenerator 并计算其原型的 L1 范数
         for m in self.modules():
             if isinstance(m, DynamicHypergraphGenerator):
-                # 对超边原型 (Prototypes) 施加 L1 正则，促进稀疏性（筛选虚拟连接）
                 l1_loss += torch.sum(torch.abs(m.hyperedge_prototypes))
                 count += 1
 
         if count > 0:
             return l1_loss / count
         else:
-            # 兼容性返回值
             return torch.tensor(0.0, device=self.data_bn.weight.device)
+
+# =============================================================================
+# Innovation 1: Dual-Branch Differential Channel Design
+# =============================================================================
+
+class ChannelDifferentialBlock(nn.Module):
+    """
+    计算通道差分特征的模块
+    公式: F_diff = Conv(F_in[:, :, c_i] - F_in[:, :, c_j])
+    """
+    def __init__(self, in_channels):
+        super().__init__()
+        # 差分后通道数减少 1 (C-1)，用 1x1 卷积投影回原维度
+        self.diff_conv = nn.Sequential(
+            nn.Conv2d(in_channels - 1, in_channels, kernel_size=1),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        # x: (N, C, T, V)
+        x_diff = x[:, 1:, :, :] - x[:, :-1, :, :]
+        out = self.diff_conv(x_diff)
+        return out
+
+class DualBranchDSA_HGN(nn.Module):
+    """
+    Paper A 核心模型：双分支 DSA-HGN
+    包含：
+    1. Spatio-Temporal Branch (ST-Branch)
+    2. Channel-Differential Branch (Diff-Branch)
+    """
+    def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3, **kwargs):
+        super().__init__()
+
+        # 分支 A: 时空分支 (原 Model)
+        self.st_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person, 
+                               graph=graph, graph_args=graph_args, in_channels=in_channels, **kwargs)
+        
+        # 分支 B: 差分分支
+        self.diff_prep = ChannelDifferentialBlock(in_channels)
+        self.diff_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person, 
+                                 graph=graph, graph_args=graph_args, in_channels=in_channels, **kwargs)
+
+        # 融合层 (Concat Features -> FC)
+        base_channel = kwargs.get('base_channels', 64)
+        feature_dim = base_channel * 4
+        
+        self.fusion_fc = nn.Linear(feature_dim * 2, num_class)
+
+    def forward(self, x, drop=False, return_features=False):
+        # x: (N, C, T, V, M)
+        
+        # 1. 分支 A 输入
+        x_st = x 
+        
+        # 2. 分支 B 输入 (预处理)
+        N, C, T, V, M = x.shape
+        x_reshaped = x.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
+        x_diff = self.diff_prep(x_reshaped)
+        x_diff = x_diff.view(N, M, C, T, V).permute(0, 2, 3, 4, 1).contiguous()
+
+        # 3. 并行前向传播
+        feat_st, z_st = self.st_branch(x_st, return_features=True)
+        feat_diff, z_diff = self.diff_branch(x_diff, return_features=True)
+
+        # 4. 特征融合
+        feat_fused = torch.cat([feat_st, feat_diff], dim=1) # (N, 512)
+        
+        if return_features:
+            # 返回拼接后的特征和主分支的 feature map (主要用于兼容性)
+            return feat_fused, z_st
+
+        out = self.fusion_fc(feat_fused)
+        return out
+
+    def get_hypergraph_l1_loss(self):
+        # 聚合两个分支的 L1 Loss
+        loss_st = self.st_branch.get_hypergraph_l1_loss()
+        loss_diff = self.diff_branch.get_hypergraph_l1_loss()
+        return (loss_st + loss_diff) / 2
+
+# =============================================================================
+# Innovation 2: Hypergraph Attention Fusion Module (HAFM)
+# =============================================================================
+
+class HypergraphAttentionFusion(nn.Module):
+    """
+    超图注意力融合模块 (HAFM)
+    对不同流的特征进行动态加权融合。
+    """
+    def __init__(self, in_channels, num_streams=4):
+        super().__init__()
+        self.num_streams = num_streams
+        
+        self.attn_conv = nn.Sequential(
+            nn.Linear(in_channels * num_streams, in_channels * num_streams // 2),
+            nn.ReLU(),
+            nn.Linear(in_channels * num_streams // 2, num_streams),
+            nn.Softmax(dim=1)
+        )
+
+    def forward(self, features_list):
+        # features_list: List of tensors [(N, C), (N, C), ...]
+        
+        features_stack = torch.stack(features_list, dim=1) # (N, num_streams, C)
+        features_cat = torch.cat(features_list, dim=1)     # (N, num_streams * C)
+        
+        attn_weights = self.attn_conv(features_cat)        # (N, num_streams)
+        
+        attn_weights = attn_weights.unsqueeze(-1)
+        fused_feature = (features_stack * attn_weights).sum(dim=1)
+        
+        return fused_feature, attn_weights
+
+class MultiStreamDSA_HGN(nn.Module):
+    """
+    集成了 HAFM 的多流网络 (用于最终融合阶段)
+    """
+    def __init__(self, model_args, num_class=14, streams=['joint', 'bone', 'joint_motion', 'bone_motion']):
+        super().__init__()
+        self.streams = streams
+        self.num_streams = len(streams)
+        
+        # 1. 骨干网络列表
+        self.backbones = nn.ModuleList([
+            DualBranchDSA_HGN(num_class=num_class, **model_args) 
+            for _ in range(self.num_streams)
+        ])
+        
+        # 获取特征维度 (Base 64 -> Feat 256 -> DualBranch 512)
+        base_channel = model_args.get('base_channels', 64)
+        feature_dim = base_channel * 4 * 2 
+        
+        # 2. HAFM
+        self.hafm = HypergraphAttentionFusion(feature_dim, num_streams=self.num_streams)
+        
+        # 3. 分类头
+        self.fc = nn.Linear(feature_dim, num_class)
+
+    def forward(self, x_joint):
+        # 实时计算各流数据 (简化版，实际建议DataLoader处理好传入)
+        # x_joint: (N, 3, T, V, M)
+        N, C, T, V, M = x_joint.shape
+        
+        inputs = []
+        inputs.append(x_joint) # Stream 1: Joint
+        
+        # 模拟其他流 (实际使用需传入 Graph 计算准确 Bone)
+        if self.num_streams > 1:
+            x_bone = torch.zeros_like(x_joint) # Placeholder
+            inputs.append(x_bone)
+        if self.num_streams > 2:
+            x_jm = torch.zeros_like(x_joint)
+            x_jm[:, :, :-1] = x_joint[:, :, 1:] - x_joint[:, :, :-1]
+            inputs.append(x_jm)
+        if self.num_streams > 3:
+            x_bm = torch.zeros_like(x_joint) # Placeholder
+            inputs.append(x_bm)
+        
+        features = []
+        for i, backbone in enumerate(self.backbones):
+            if i < len(inputs):
+                feat, _ = backbone(inputs[i], return_features=True)
+                features.append(feat)
+            
+        fused_feat, attn = self.hafm(features)
+        out = self.fc(fused_feat)
+        
+        return out
