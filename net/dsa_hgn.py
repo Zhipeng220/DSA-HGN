@@ -627,3 +627,4 @@ class MultiStreamDSA_HGN(nn.Module):
         out = self.fc(fused_feat)
         
         return out
+
