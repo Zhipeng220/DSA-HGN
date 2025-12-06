@@ -235,7 +235,7 @@ class unit_gcn(nn.Module):
                 conv_init(m)
             elif isinstance(m, nn.BatchNorm2d):
                 bn_init(m, 1)
-        # [FIX] 提高 epsilon 以防 MPS 不稳定
+        # 提高 epsilon 以防 MPS 不稳定
         bn_init(self.bn, 1e-5)
 
     def forward(self, x):
@@ -264,22 +264,26 @@ class DynamicHypergraphGenerator(nn.Module):
 
         self.query = nn.Conv2d(in_channels, inter_channels, 1)
 
+        # [OPTIMIZATION] LayerNorm 用于稳定 Attention 的输入分布
+        # 这是解决数值不稳定性(NaN)最根本的方法
+        self.ln = nn.LayerNorm(inter_channels)
+
         self.hyperedge_prototypes = nn.Parameter(torch.randn(inter_channels, num_hyperedges))
 
     def forward(self, x):
         N, C, T, V = x.shape
         q_node = self.query(x)
-        q_node_pooled = q_node.mean(2).permute(0, 2, 1)
+        q_node_pooled = q_node.mean(2).permute(0, 2, 1)  # (N, V, C')
 
-        # [FIX] Scaled Dot-Product Attention: 增加 scale 因子防止数值溢出
+        # [OPTIMIZATION] 归一化输入特征
+        q_node_pooled = self.ln(q_node_pooled)
+
+        # Scaled Dot-Product Attention
         scale = self.query.out_channels ** -0.5
         H = torch.matmul(q_node_pooled, self.hyperedge_prototypes) * scale
 
-        # 🔴 [CRITICAL FIX] 强制清除 NaN，防止崩坏 (MPS 必须!)
-        H = torch.nan_to_num(H, nan=0.0, posinf=10.0, neginf=-10.0)
-
-        # [FIX] Clamping: 限制数值范围，双重防止 Softmax 溢出
-        H = torch.clamp(H, min=-10.0, max=10.0)
+        # [OPTIMIZATION] 由于有 LayerNorm，H 的数值范围被限制在合理区间
+        # 不再需要 nan_to_num 和 clamp 等硬补丁
 
         H = torch.softmax(H, dim=-1)
         return H
@@ -316,14 +320,14 @@ class unit_hypergcn(nn.Module):
         N, C, T, V = x.shape
         H = self.dhg(x)
 
-        # [CRITICAL FIX] 增加 epsilon 到 1e-4 防止 MPS 除以极小值崩溃
-        H_norm_v = H / (H.sum(dim=1, keepdim=True) + 1e-4)
+        # 使用较小的 epsilon 即可，因为 H 来自稳定的 Softmax
+        H_norm_v = H / (H.sum(dim=1, keepdim=True) + 1e-5)
         x_v2e_feat = self.conv_v2e(x)
         x_edge = torch.einsum('nctv,nve->ncte', x_v2e_feat, H_norm_v)
 
         x_e_feat = self.conv_e(x_edge)
-        # [CRITICAL FIX] 增加 epsilon 到 1e-4
-        H_norm_e = H / (H.sum(dim=2, keepdim=True) + 1e-4)
+
+        H_norm_e = H / (H.sum(dim=2, keepdim=True) + 1e-5)
         x_node = torch.einsum('ncte,nev->nctv', x_e_feat, H_norm_e.transpose(1, 2))
 
         y = self.bn(x_node)
@@ -419,8 +423,8 @@ class Model(nn.Module):
             self.drop_out = lambda x: x
 
     def forward(self, x, drop=False, return_features=False):
-        # 🔴 [CRITICAL FIX] 入口安检
-        x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
+        # [OPTIMIZATION] 移除了入口处的 nan_to_num 补丁
+        # 如果输入数据有问题，应由数据预处理或 Feeder 解决
 
         if len(x.shape) == 3:
             N, T, VC = x.shape
@@ -458,7 +462,6 @@ class Model(nn.Module):
         else:
             return self.fc(x_out)
 
-    # 🔴 [Paper A Innovation] L1 Loss for Virtual Connectivity Sparsity
     def get_hypergraph_l1_loss(self):
         l1_loss = 0.0
         count = 0
@@ -478,14 +481,8 @@ class Model(nn.Module):
 # =============================================================================
 
 class ChannelDifferentialBlock(nn.Module):
-    """
-    计算通道差分特征的模块
-    公式: F_diff = Conv(F_in[:, :, c_i] - F_in[:, :, c_j])
-    """
-
     def __init__(self, in_channels):
         super().__init__()
-        # 差分后通道数减少 1 (C-1)，用 1x1 卷积投影回原维度
         self.diff_conv = nn.Sequential(
             nn.Conv2d(in_channels - 1, in_channels, kernel_size=1),
             nn.BatchNorm2d(in_channels),
@@ -500,27 +497,17 @@ class ChannelDifferentialBlock(nn.Module):
 
 
 class DualBranchDSA_HGN(nn.Module):
-    """
-    Paper A 核心模型：双分支 DSA-HGN
-    包含：
-    1. Spatio-Temporal Branch (ST-Branch)
-    2. Channel-Differential Branch (Diff-Branch)
-    """
-
     def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3,
                  **kwargs):
         super().__init__()
 
-        # 分支 A: 时空分支 (原 Model)
         self.st_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person,
                                graph=graph, graph_args=graph_args, in_channels=in_channels, **kwargs)
 
-        # 分支 B: 差分分支
         self.diff_prep = ChannelDifferentialBlock(in_channels)
         self.diff_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person,
                                  graph=graph, graph_args=graph_args, in_channels=in_channels, **kwargs)
 
-        # 融合层 (Concat Features -> FC)
         base_channel = kwargs.get('base_channels', 64)
         feature_dim = base_channel * 4
 
@@ -528,32 +515,25 @@ class DualBranchDSA_HGN(nn.Module):
 
     def forward(self, x, drop=False, return_features=False):
         # x: (N, C, T, V, M)
-
-        # 1. 分支 A 输入
         x_st = x
 
-        # 2. 分支 B 输入 (预处理)
         N, C, T, V, M = x.shape
         x_reshaped = x.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
         x_diff = self.diff_prep(x_reshaped)
         x_diff = x_diff.view(N, M, C, T, V).permute(0, 2, 3, 4, 1).contiguous()
 
-        # 3. 并行前向传播
         feat_st, z_st = self.st_branch(x_st, return_features=True)
         feat_diff, z_diff = self.diff_branch(x_diff, return_features=True)
 
-        # 4. 特征融合
-        feat_fused = torch.cat([feat_st, feat_diff], dim=1)  # (N, 512)
+        feat_fused = torch.cat([feat_st, feat_diff], dim=1)
 
         if return_features:
-            # 返回拼接后的特征和主分支的 feature map (主要用于兼容性)
             return feat_fused, z_st
 
         out = self.fusion_fc(feat_fused)
         return out
 
     def get_hypergraph_l1_loss(self):
-        # 聚合两个分支的 L1 Loss
         loss_st = self.st_branch.get_hypergraph_l1_loss()
         loss_diff = self.diff_branch.get_hypergraph_l1_loss()
         return (loss_st + loss_diff) / 2
@@ -564,11 +544,6 @@ class DualBranchDSA_HGN(nn.Module):
 # =============================================================================
 
 class HypergraphAttentionFusion(nn.Module):
-    """
-    超图注意力融合模块 (HAFM)
-    对不同流的特征进行动态加权融合。
-    """
-
     def __init__(self, in_channels, num_streams=4):
         super().__init__()
         self.num_streams = num_streams
@@ -581,8 +556,6 @@ class HypergraphAttentionFusion(nn.Module):
         )
 
     def forward(self, features_list):
-        # features_list: List of tensors [(N, C), (N, C), ...]
-
         features_stack = torch.stack(features_list, dim=1)  # (N, num_streams, C)
         features_cat = torch.cat(features_list, dim=1)  # (N, num_streams * C)
 
@@ -595,32 +568,22 @@ class HypergraphAttentionFusion(nn.Module):
 
 
 class MultiStreamDSA_HGN(nn.Module):
-    """
-    集成了 HAFM 的多流网络 (用于最终融合阶段)
-    """
-
     def __init__(self, model_args, num_class=14, streams=['joint', 'bone', 'joint_motion', 'bone_motion']):
         super().__init__()
         self.streams = streams
         self.num_streams = len(streams)
 
-        # 1. 骨干网络列表
         self.backbones = nn.ModuleList([
             DualBranchDSA_HGN(num_class=num_class, **model_args)
             for _ in range(self.num_streams)
         ])
 
-        # 获取特征维度 (Base 64 -> Feat 256 -> DualBranch 512)
         base_channel = model_args.get('base_channels', 64)
         feature_dim = base_channel * 4 * 2
 
-        # 2. HAFM
         self.hafm = HypergraphAttentionFusion(feature_dim, num_streams=self.num_streams)
-
-        # 3. 分类头
         self.fc = nn.Linear(feature_dim, num_class)
 
-        # 4. [FIX] 初始化图以获取骨骼定义
         self.bone_pairs = []
         if 'graph' in model_args:
             Graph = import_class(model_args['graph'])
@@ -629,25 +592,19 @@ class MultiStreamDSA_HGN(nn.Module):
             if hasattr(graph, 'inward'):
                 self.bone_pairs = graph.inward
             else:
-                # 尝试其他常见属性名，或者打印警告
                 print("Warning: Graph does not have 'inward' attribute. Bone stream will be zero.")
 
     def forward(self, x_joint):
-        # x_joint: (N, 3, T, V, M)
-        N, C, T, V, M = x_joint.shape
-
         inputs = []
         inputs.append(x_joint)  # Stream 1: Joint
 
-        # 实时计算其他流
-        x_bone = None  # 缓存 bone 数据供 bone_motion 使用
+        x_bone = None
 
         # 2. Bone Stream
         if self.num_streams > 1:
             x_bone = torch.zeros_like(x_joint)
             if self.bone_pairs:
                 for v1, v2 in self.bone_pairs:
-                    # v1: source, v2: target
                     x_bone[:, :, :, v1, :] = x_joint[:, :, :, v1, :] - x_joint[:, :, :, v2, :]
             inputs.append(x_bone)
 
@@ -655,12 +612,10 @@ class MultiStreamDSA_HGN(nn.Module):
         if self.num_streams > 2:
             x_jm = torch.zeros_like(x_joint)
             x_jm[:, :, :-1, :, :] = x_joint[:, :, 1:, :, :] - x_joint[:, :, :-1, :, :]
-            # 最后一帧通常补0或复制
             inputs.append(x_jm)
 
         # 4. Bone Motion Stream
         if self.num_streams > 3:
-            # 如果之前没有计算 x_bone (比如 skip 了 stream 2)，这里需要重新计算
             if x_bone is None:
                 x_bone = torch.zeros_like(x_joint)
                 if self.bone_pairs:
