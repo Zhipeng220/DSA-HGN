@@ -5,12 +5,14 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
+
 def import_class(name):
     components = name.split('.')
     mod = __import__(components[0])
     for comp in components[1:]:
         mod = getattr(mod, comp)
     return mod
+
 
 def conv_branch_init(conv, branches):
     weight = conv.weight
@@ -20,15 +22,18 @@ def conv_branch_init(conv, branches):
     nn.init.normal_(weight, 0, math.sqrt(2. / (n * k1 * k2 * branches)))
     nn.init.constant_(conv.bias, 0)
 
+
 def conv_init(conv):
     if conv.weight is not None:
         nn.init.kaiming_normal_(conv.weight, mode='fan_out')
     if conv.bias is not None:
         nn.init.constant_(conv.bias, 0)
 
+
 def bn_init(bn, scale):
     nn.init.constant_(bn.weight, scale)
     nn.init.constant_(bn.bias, 0)
+
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -42,6 +47,7 @@ def weights_init(m):
             m.weight.data.normal_(1.0, 0.02)
         if hasattr(m, 'bias') and m.bias is not None:
             m.bias.data.fill_(0)
+
 
 # =============================================================================
 # Basic Modules (TCN, GCN, Hypergraph)
@@ -65,6 +71,7 @@ class TemporalConv(nn.Module):
         x = self.conv(x)
         x = self.bn(x)
         return x
+
 
 class MultiScale_TemporalConv(nn.Module):
     def __init__(self,
@@ -143,6 +150,7 @@ class MultiScale_TemporalConv(nn.Module):
         out = out + res
         return out
 
+
 class CTRGC(nn.Module):
     def __init__(self, in_channels, out_channels, rel_reduction=8, mid_reduction=1):
         super(CTRGC, self).__init__()
@@ -172,6 +180,7 @@ class CTRGC(nn.Module):
         x1 = torch.einsum('ncuv,nctv->nctu', x1, x3)
         return x1
 
+
 class unit_tcn(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=9, stride=1):
         super(unit_tcn, self).__init__()
@@ -187,6 +196,7 @@ class unit_tcn(nn.Module):
     def forward(self, x):
         x = self.bn(self.conv(x))
         return x
+
 
 class unit_gcn(nn.Module):
     def __init__(self, in_channels, out_channels, A, coff_embedding=4, adaptive=True, residual=True):
@@ -243,6 +253,7 @@ class unit_gcn(nn.Module):
 
         return y
 
+
 class DynamicHypergraphGenerator(nn.Module):
     def __init__(self, in_channels, num_hyperedges, ratio=8):
         super(DynamicHypergraphGenerator, self).__init__()
@@ -272,6 +283,7 @@ class DynamicHypergraphGenerator(nn.Module):
 
         H = torch.softmax(H, dim=-1)
         return H
+
 
 class unit_hypergcn(nn.Module):
     def __init__(self, in_channels, out_channels, num_hyperedges=16, residual=True):
@@ -319,6 +331,7 @@ class unit_hypergcn(nn.Module):
         y = self.relu(y)
         return y
 
+
 class TCN_GCN_unit(nn.Module):
     def __init__(self, in_channels, out_channels, A, stride=1, residual=True, adaptive=True, kernel_size=5,
                  dilations=[1, 2], num_hyperedges=16):
@@ -355,6 +368,7 @@ class TCN_GCN_unit(nn.Module):
 
         y = self.relu(self.tcn1(z_fused) + self.residual(x))
         return y
+
 
 # =============================================================================
 # Backbone Model (Single Stream, Single Branch)
@@ -458,6 +472,7 @@ class Model(nn.Module):
         else:
             return torch.tensor(0.0, device=self.data_bn.weight.device)
 
+
 # =============================================================================
 # Innovation 1: Dual-Branch Differential Channel Design
 # =============================================================================
@@ -467,6 +482,7 @@ class ChannelDifferentialBlock(nn.Module):
     计算通道差分特征的模块
     公式: F_diff = Conv(F_in[:, :, c_i] - F_in[:, :, c_j])
     """
+
     def __init__(self, in_channels):
         super().__init__()
         # 差分后通道数减少 1 (C-1)，用 1x1 卷积投影回原维度
@@ -482,6 +498,7 @@ class ChannelDifferentialBlock(nn.Module):
         out = self.diff_conv(x_diff)
         return out
 
+
 class DualBranchDSA_HGN(nn.Module):
     """
     Paper A 核心模型：双分支 DSA-HGN
@@ -489,30 +506,32 @@ class DualBranchDSA_HGN(nn.Module):
     1. Spatio-Temporal Branch (ST-Branch)
     2. Channel-Differential Branch (Diff-Branch)
     """
-    def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3, **kwargs):
+
+    def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3,
+                 **kwargs):
         super().__init__()
 
         # 分支 A: 时空分支 (原 Model)
-        self.st_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person, 
+        self.st_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person,
                                graph=graph, graph_args=graph_args, in_channels=in_channels, **kwargs)
-        
+
         # 分支 B: 差分分支
         self.diff_prep = ChannelDifferentialBlock(in_channels)
-        self.diff_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person, 
+        self.diff_branch = Model(num_class=num_class, num_point=num_point, num_person=num_person,
                                  graph=graph, graph_args=graph_args, in_channels=in_channels, **kwargs)
 
         # 融合层 (Concat Features -> FC)
         base_channel = kwargs.get('base_channels', 64)
         feature_dim = base_channel * 4
-        
+
         self.fusion_fc = nn.Linear(feature_dim * 2, num_class)
 
     def forward(self, x, drop=False, return_features=False):
         # x: (N, C, T, V, M)
-        
+
         # 1. 分支 A 输入
-        x_st = x 
-        
+        x_st = x
+
         # 2. 分支 B 输入 (预处理)
         N, C, T, V, M = x.shape
         x_reshaped = x.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
@@ -524,8 +543,8 @@ class DualBranchDSA_HGN(nn.Module):
         feat_diff, z_diff = self.diff_branch(x_diff, return_features=True)
 
         # 4. 特征融合
-        feat_fused = torch.cat([feat_st, feat_diff], dim=1) # (N, 512)
-        
+        feat_fused = torch.cat([feat_st, feat_diff], dim=1)  # (N, 512)
+
         if return_features:
             # 返回拼接后的特征和主分支的 feature map (主要用于兼容性)
             return feat_fused, z_st
@@ -539,6 +558,7 @@ class DualBranchDSA_HGN(nn.Module):
         loss_diff = self.diff_branch.get_hypergraph_l1_loss()
         return (loss_st + loss_diff) / 2
 
+
 # =============================================================================
 # Innovation 2: Hypergraph Attention Fusion Module (HAFM)
 # =============================================================================
@@ -548,10 +568,11 @@ class HypergraphAttentionFusion(nn.Module):
     超图注意力融合模块 (HAFM)
     对不同流的特征进行动态加权融合。
     """
+
     def __init__(self, in_channels, num_streams=4):
         super().__init__()
         self.num_streams = num_streams
-        
+
         self.attn_conv = nn.Sequential(
             nn.Linear(in_channels * num_streams, in_channels * num_streams // 2),
             nn.ReLU(),
@@ -561,70 +582,106 @@ class HypergraphAttentionFusion(nn.Module):
 
     def forward(self, features_list):
         # features_list: List of tensors [(N, C), (N, C), ...]
-        
-        features_stack = torch.stack(features_list, dim=1) # (N, num_streams, C)
-        features_cat = torch.cat(features_list, dim=1)     # (N, num_streams * C)
-        
-        attn_weights = self.attn_conv(features_cat)        # (N, num_streams)
-        
+
+        features_stack = torch.stack(features_list, dim=1)  # (N, num_streams, C)
+        features_cat = torch.cat(features_list, dim=1)  # (N, num_streams * C)
+
+        attn_weights = self.attn_conv(features_cat)  # (N, num_streams)
+
         attn_weights = attn_weights.unsqueeze(-1)
         fused_feature = (features_stack * attn_weights).sum(dim=1)
-        
+
         return fused_feature, attn_weights
+
 
 class MultiStreamDSA_HGN(nn.Module):
     """
     集成了 HAFM 的多流网络 (用于最终融合阶段)
     """
+
     def __init__(self, model_args, num_class=14, streams=['joint', 'bone', 'joint_motion', 'bone_motion']):
         super().__init__()
         self.streams = streams
         self.num_streams = len(streams)
-        
+
         # 1. 骨干网络列表
         self.backbones = nn.ModuleList([
-            DualBranchDSA_HGN(num_class=num_class, **model_args) 
+            DualBranchDSA_HGN(num_class=num_class, **model_args)
             for _ in range(self.num_streams)
         ])
-        
+
         # 获取特征维度 (Base 64 -> Feat 256 -> DualBranch 512)
         base_channel = model_args.get('base_channels', 64)
-        feature_dim = base_channel * 4 * 2 
-        
+        feature_dim = base_channel * 4 * 2
+
         # 2. HAFM
         self.hafm = HypergraphAttentionFusion(feature_dim, num_streams=self.num_streams)
-        
+
         # 3. 分类头
         self.fc = nn.Linear(feature_dim, num_class)
 
+        # 4. [FIX] 初始化图结构以获取骨骼连接信息
+        if 'graph' not in model_args:
+            raise ValueError("MultiStreamDSA_HGN requires 'graph' in model_args to compute bone data.")
+
+        Graph = import_class(model_args['graph'])
+        graph_args = model_args.get('graph_args', {})
+        self.graph_layout = Graph(**graph_args)
+
+        # 获取向心连接 (Bone = source - target)
+        # 注意：不同 Graph 实现可能属性名不同，这里优先尝试 inward，其次尝试 self_link 的逻辑
+        if hasattr(self.graph_layout, 'inward'):
+            self.bone_pairs = self.graph_layout.inward
+        elif hasattr(self.graph_layout, 'edge'):
+            # Fallback for generic graph, though less precise for directed bones
+            self.bone_pairs = []
+            print("Warning: Could not find 'inward' edges in graph. Bone calculation might be incorrect.")
+        else:
+            self.bone_pairs = []
+
     def forward(self, x_joint):
-        # 实时计算各流数据 (简化版，实际建议DataLoader处理好传入)
         # x_joint: (N, 3, T, V, M)
         N, C, T, V, M = x_joint.shape
-        
+
+        # 1. Joint
         inputs = []
-        inputs.append(x_joint) # Stream 1: Joint
-        
-        # 模拟其他流 (实际使用需传入 Graph 计算准确 Bone)
+        inputs.append(x_joint)
+
+        # [FIX] 实时计算其他流
+
+        # 2. Bone
         if self.num_streams > 1:
-            x_bone = torch.zeros_like(x_joint) # Placeholder
+            x_bone = torch.zeros_like(x_joint)
+            if len(self.bone_pairs) > 0:
+                for (v1, v2) in self.bone_pairs:
+                    # v1 is source, v2 is target. Bone = v1 - v2
+                    x_bone[:, :, :, v1, :] = x_joint[:, :, :, v1, :] - x_joint[:, :, :, v2, :]
             inputs.append(x_bone)
+
+        # 3. Joint Motion
         if self.num_streams > 2:
             x_jm = torch.zeros_like(x_joint)
-            x_jm[:, :, :-1] = x_joint[:, :, 1:] - x_joint[:, :, :-1]
+            x_jm[:, :, :-1, :, :] = x_joint[:, :, 1:, :, :] - x_joint[:, :, :-1, :, :]
             inputs.append(x_jm)
+
+        # 4. Bone Motion
         if self.num_streams > 3:
-            x_bm = torch.zeros_like(x_joint) # Placeholder
+            # Must ensure x_bone was computed
+            if len(inputs) < 2:
+                # Should not happen if streams > 3 implies streams > 1, but safe guard
+                x_bone = torch.zeros_like(x_joint)
+
+            x_bm = torch.zeros_like(x_bone)
+            x_bm[:, :, :-1, :, :] = x_bone[:, :, 1:, :, :] - x_bone[:, :, :-1, :, :]
             inputs.append(x_bm)
-        
+
         features = []
         for i, backbone in enumerate(self.backbones):
             if i < len(inputs):
                 feat, _ = backbone(inputs[i], return_features=True)
                 features.append(feat)
-            
+
         fused_feat, attn = self.hafm(features)
         out = self.fc(fused_feat)
-        
-        return out
 
+        return out
