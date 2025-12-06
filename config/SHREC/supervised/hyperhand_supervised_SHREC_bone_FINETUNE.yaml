@@ -1,0 +1,72 @@
+work_dir: ./work_dir/SHREC/hyperhand_bone_rescue
+
+# 1. 务必加载 V4 跑出的最好权重 (88.45%)
+weights: ./work_dir/SHREC/hyperhand_bone_v4/epoch075_acc88.45_model.pt
+
+model: net.ctrgcn.Model
+model_args:
+  in_channels: 3
+  num_class: 14
+  num_point: 22
+  num_person: 1
+  drop_out: 0.6
+  graph: graph.shrec.Graph
+  graph_args:
+    labeling_mode: 'spatial'
+  num_hyperedges: 16
+  adaptive: True
+
+train_feeder: feeder.feeder_egogesture.Feeder
+test_feeder: feeder.feeder_egogesture.Feeder
+
+train_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_label.pkl
+  split: train
+  bone: True
+  vel: False
+  window_size: 64
+  # 🔴 [关键修改] 移除 p_interval (随机裁剪)，微调阶段保持输入稳定
+  # p_interval: [0.5, 1]
+  shear_amplitude: 0.2
+  temperal_padding_ratio: 6
+  random_rot: True
+  random_choose: True
+  random_move: False
+  random_shift: True
+  normalization: True
+  debug: False
+  use_mmap: True
+
+test_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_label.pkl
+  split: test
+  bone: True
+  window_size: 64
+  normalization: True
+  debug: False
+  use_mmap: True
+
+# 🔴 [关键修改] 极低学习率，模拟 Decay 后的状态
+optimizer: AdamW
+base_lr: 0.00001           # ⬅️ 1e-5 (非常保守，只许微调)
+weight_decay: 0.05         # 保持 V4 的强正则化
+step: [20, 40]             # 稍微衰减一下即可
+num_epoch: 60              # 不需要太久
+
+device: [0]
+batch_size: 32
+test_batch_size: 32
+nesterov: True
+grad_clip_norm: 1.0
+
+loss: torch.nn.CrossEntropyLoss
+loss_args:
+  label_smoothing: 0.1
+num_worker: 4
+use_gpu: True
+log_interval: 100
+save_interval: 1
+eval_interval: 1
+save_result: True

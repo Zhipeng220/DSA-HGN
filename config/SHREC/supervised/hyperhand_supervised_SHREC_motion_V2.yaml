@@ -1,0 +1,72 @@
+work_dir: ./work_dir/SHREC/hyperhand_motion_sota_replica
+
+# 1. 必须从头训练
+weights: null
+
+model: net.ctrgcn.Model
+model_args:
+  in_channels: 3
+  num_class: 14
+  num_point: 22
+  num_person: 1
+  drop_out: 0.6
+  graph: graph.shrec.Graph
+  graph_args:
+    labeling_mode: 'spatial'
+  num_hyperedges: 16
+  adaptive: True
+
+train_feeder: feeder.feeder_egogesture.Feeder
+test_feeder: feeder.feeder_egogesture.Feeder
+
+train_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_label.pkl
+  split: train
+  bone: False
+  vel: True                # ✅ Motion 流
+
+  # 👇👇👇 [SOTA 核心复刻区域] 👇👇👇
+  window_size: 180         # 💥 [核弹级改动] 直接拉满到 180，捕捉全长时序
+  normalization: False     # 💥 [关键改动] 关闭归一化，保留原始速度幅值
+  random_choose: True      # ✅ SOTA 核心采样策略
+
+  # SOTA 关闭了以下两项，我们也关掉试试，减少空间噪声
+  random_shift: False
+  random_move: False
+
+  # 保留我们之前验证有效的剪切，但在长窗口下稍微温和一点
+  shear_amplitude: 0.5
+  temperal_padding_ratio: 6
+  random_rot: True
+  debug: False
+  use_mmap: True
+
+test_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_label.pkl
+  split: test
+  bone: False
+  vel: True
+  window_size: 180         # ✅ 保持一致
+  normalization: False     # ✅ 保持一致
+  debug: False
+  use_mmap: True
+
+# 优化策略：尝试模拟 SOTA 的长训练周期
+# 由于 SOTA 用 SGD+Warmup 跑 150 轮，我们用 AdamW 模拟
+optimizer: AdamW
+base_lr: 0.0002            # 保持稳健
+weight_decay: 0.05         # 保持强正则
+step: [70, 100, 120]       # ⏳ 延后衰减点 (模仿 SOTA 的 [70, 100])
+num_epoch: 150             # ⏳ 延长到 150 轮，给长窗口更多学习时间
+
+device: [0]
+batch_size: 32             # 显存允许的话尽量大，不行就 32
+test_batch_size: 32
+nesterov: True
+grad_clip_norm: 1.0
+
+loss: torch.nn.CrossEntropyLoss
+loss_args:
+  label_smoothing: 0.1

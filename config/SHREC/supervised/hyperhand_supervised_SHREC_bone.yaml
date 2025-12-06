@@ -1,0 +1,75 @@
+# config/SHREC/supervised/hyperhand_supervised_SHREC_bone.yaml
+
+work_dir: ./work_dir/SHREC/hyperhand_bone
+
+# 1. 权重: null 表示从头训练
+weights: null
+
+# 2. 数据流: Bone
+train_feeder: feeder.feeder_egogesture.Feeder
+test_feeder: feeder.feeder_egogesture.Feeder
+
+train_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_label.pkl
+  split: train
+  bone: True
+  window_size: 50
+  shear_amplitude: 0.2
+  temperal_padding_ratio: 6
+  random_rot: True
+  random_choose: True
+  random_move: False
+  random_shift: True
+  normalization: True
+  debug: False
+  use_mmap: True
+
+test_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_label.pkl
+  split: test
+  bone: True
+  window_size: 50
+  normalization: True
+  debug: False
+  use_mmap: True
+
+# 3. 模型
+model: net.ctrgcn.Model
+model_args:
+  in_channels: 3
+  num_class: 14
+  num_point: 22
+  num_person: 1
+  drop_out: 0.5
+  graph: 'graph.shrec.Graph'
+  graph_args:
+    labeling_mode: 'spatial'
+  num_hyperedges: 16
+  adaptive: True
+
+# 4. 优化器设置
+optimizer: AdamW
+base_lr: 0.0002
+weight_decay: 0.05    # 🔴 [增强] 增强正则化 (0.01 -> 0.05) 抑制过拟合
+
+optimizer_args:
+  eps: 0.0001         # 保持 1e-4 防止除零
+
+step: [45, 60]        # 🔴 [推迟] 延后衰减点，让模型充分学习
+
+# 5. 安全保障
+grad_clip_norm: 1.0
+
+# 6. 训练参数
+num_epoch: 80         # 🔴 [延长] 增加训练轮次 (65 -> 80)
+batch_size: 32
+test_batch_size: 32
+num_worker: 4
+device: [0]
+use_gpu: True
+log_interval: 100
+save_interval: 1
+eval_interval: 1
+save_result: True
