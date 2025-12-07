@@ -1,0 +1,90 @@
+# 配置文件名称: config/egogesture/supervised/hyperhand_supervised.yaml
+
+# 1. 工作目录
+work_dir: ./work_dir/egogesture/paper1_hyperhand_supervised
+
+# 2. 权重: null 表示从头开始监督训练 (Supervised Learning from Scratch)
+weights: null
+ignore_weights: []
+
+# 3. 数据加载器 (Feeder)
+# 🔴 [FIX] 删除了 'feeder' 键，只保留 train_feeder 和 test_feeder
+train_feeder: feeder.feeder_egogesture.Feeder
+test_feeder: feeder.feeder_egogesture.Feeder
+
+# 4. 训练数据参数
+train_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/train_data.npy
+  label_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/train_label.pkl
+  split: train
+  bone: False           # Paper 1 核心：使用 Joint 流配合动态超图
+  window_size: 50
+
+  # 数据增强
+  shear_amplitude: 0.5
+  temperal_padding_ratio: 6
+  random_rot: True
+  random_choose: True
+  random_move: True
+  random_shift: True
+
+  normalization: False
+  debug: False
+  use_mmap: True
+
+# 5. 测试数据参数
+test_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/val_data.npy
+  label_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/val_label.pkl
+  split: test
+  bone: False
+  window_size: 50
+  normalization: False
+  debug: False
+  use_mmap: True
+
+# 6. 模型定义 (Paper 1 核心)
+model: net.ctrgcn.Model
+model_args:
+  in_channels: 3
+  num_class: 83         # EgoGesture 类别数
+  num_point: 21
+  num_person: 2
+  drop_out: 0.5
+  graph: 'graph.egogesture.Graph'
+  graph_args:
+    labeling_mode: 'spatial'
+
+  # [Innovation] 动态超图参数
+  num_hyperedges: 16    # 启用动态超图卷积
+  adaptive: True        # 启用自适应图结构
+
+# 7. 优化器
+optimizer: SGD
+base_lr: 0.1            # 监督学习高学习率
+optimizer_args:
+  momentum: 0.9
+  nesterov: True
+weight_decay: 0.0001
+grad_clip_norm: 1.0
+
+# 8. 学习率调度
+step: [30, 40, 50]
+# lr_decay_rate: 0.1
+
+# 9. 训练参数
+phase: train
+num_epoch: 60
+device: [0]
+batch_size: 32
+test_batch_size: 32
+num_worker: 4
+use_gpu: True
+stream: 'joint'
+
+# 10. 日志与保存
+save_interval: 5
+eval_interval: 5
+print_log: True
+save_log: True
+show_topk: [1, 5]

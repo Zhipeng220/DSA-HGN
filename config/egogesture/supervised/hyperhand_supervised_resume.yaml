@@ -1,0 +1,83 @@
+# 1. 新的工作目录 (避免覆盖之前的日志)
+work_dir: ./work_dir/egogesture/paper1_hyperhand_supervised_resume
+
+# 2. 核心：加载 Epoch 55 的“黄金权重”
+# 请确保这个路径下的文件存在。如果找不到，请检查文件名是否完全匹配。
+weights: ./work_dir/egogesture/paper1_hyperhand_supervised/epoch055_acc77.01_model.pt
+
+# 3. 训练进度控制
+start_epoch: 55
+num_epoch: 70       # 再跑 15 个 Epoch 即可，不需要太久
+
+# 4. 【救命稻草】梯度裁剪 (防止 Loss 再次飙升到 5.0)
+grad_clip_norm: 1.0
+
+# 5. 优化器调整 (微调模式)
+# 之前在 Epoch 50 衰减到了 0.001 (1e-3) 并发生了爆炸
+# 我们现在使用更低、更安全的学习率
+optimizer: SGD
+base_lr: 0.0001     # 1e-4，非常保守的微调学习率
+optimizer_args:
+  momentum: 0.9
+  nesterov: True
+weight_decay: 0.0001
+
+# 禁用 Step 衰减 (我们已经处于训练末期，固定 LR 即可)
+step: []
+
+# 6. 模型定义 (保持与之前完全一致)
+model: net.ctrgcn.Model
+model_args:
+  in_channels: 3
+  num_class: 83
+  num_point: 21
+  num_person: 2
+  drop_out: 0.5
+  graph: 'graph.egogesture.Graph'
+  graph_args:
+    labeling_mode: 'spatial'
+  num_hyperedges: 16
+  adaptive: True
+
+# 7. 数据加载器 (保持不变)
+train_feeder: feeder.feeder_egogesture.Feeder
+train_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/train_data.npy
+  label_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/train_label.pkl
+  split: train
+  bone: False
+  window_size: 50
+  shear_amplitude: 0.5
+  temperal_padding_ratio: 6
+  random_rot: True
+  random_choose: True
+  random_move: True
+  random_shift: True
+  normalization: False
+  debug: False
+  use_mmap: True
+
+test_feeder: feeder.feeder_egogesture.Feeder
+test_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/val_data.npy
+  label_path: /Users/gzp/Desktop/exp/CTR-GCN-main/data/egogesture/val_label.pkl
+  split: test
+  bone: False
+  window_size: 50
+  normalization: False
+  debug: False
+  use_mmap: True
+
+# 8. 其他训练参数
+batch_size: 32
+test_batch_size: 32
+num_worker: 4
+device: [0]
+use_gpu: True
+
+# 日志和保存频率 (加密保存，防止错过最佳点)
+log_interval: 100
+save_interval: 1    # 每个 Epoch 都保存，因为我们只跑很少的轮次
+eval_interval: 1    # 每个 Epoch 都评估
+save_result: True   # 保存结果以便分析
+show_topk: [1, 5]
