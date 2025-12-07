@@ -20,6 +20,7 @@ model_args:
   graph_args:
     labeling_mode: 'spatial'
   num_hyperedges: 16
+  k_neighbors: 4
   adaptive: true
   use_virtual_conn: True
 
@@ -75,8 +76,8 @@ loss: torch.nn.CrossEntropyLoss
 
 # [Paper A SOTA Hyperparameters]
 # 激活 recognition.py 中的 Paper A 专属损失函数
-lambda_sparsity: 0.0001  # 控制 STE 剪枝的稀疏度
-lambda_ortho: 0.005      # 控制超边原型的多样性
+lambda_sparsity: 0.00  # 控制 STE 剪枝的稀疏度
+lambda_ortho: 0.05      # 控制超边原型的多样性
 
 
 log_interval: 100
