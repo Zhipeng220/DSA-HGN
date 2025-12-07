@@ -1,0 +1,72 @@
+work_dir: ./work_dir/egogesture/hyperhand_joint_adamw
+
+# 1. 从头开始，或者加载您之前的 epoch055 作为预训练权重也可以
+# 建议从头跑，因为优化器变了，参数分布会变
+weights: null 
+
+# 2. 数据流: Joint
+train_feeder: feeder.feeder_egogesture.Feeder
+test_feeder: feeder.feeder_egogesture.Feeder
+train_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/train_label.pkl
+  split: train
+  bone: False  # Joint 流
+  window_size: 50
+  shear_amplitude: 0.5
+  temperal_padding_ratio: 6
+  random_rot: True
+  random_choose: True
+  random_move: True
+  random_shift: True
+  normalization: False
+  debug: False
+  use_mmap: True
+
+test_feeder_args:
+  data_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_data.npy
+  label_path: /Users/gzp/Desktop/exp/DATA/SHREC2017_data/val_label.pkl
+  split: test
+  bone: False
+  window_size: 50
+  normalization: False
+  debug: False
+  use_mmap: True
+
+# 3. 模型 (保持 HyperHand 核心)
+model: net.ctrgcn.Model
+model_args:
+  in_channels: 3
+  num_class: 83
+  num_point: 21
+  num_person: 2
+  drop_out: 0.5     # 稍微增加 Dropout 防止过拟合
+  graph: 'graph.egogesture.Graph'
+  graph_args:
+    labeling_mode: 'spatial'
+  num_hyperedges: 16  # 核心创新
+  adaptive: True
+
+# 4. 关键修改：AdamW 优化器
+optimizer: AdamW
+base_lr: 0.001        # AdamW 的标准其实 lr
+optimizer_args:
+  weight_decay: 0.05
+
+
+step: [35, 55]        # 在 35 和 55 epoch 衰减
+
+# 6. 安全保障
+grad_clip_norm: 1.0   # 必须保留！防止梯度爆炸
+
+# 7. 训练参数
+num_epoch: 65
+batch_size: 32
+test_batch_size: 32
+num_worker: 4
+device: [0]
+use_gpu: True
+log_interval: 100
+save_interval: 1
+eval_interval: 1
+save_result: True
